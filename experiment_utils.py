@@ -866,3 +866,123 @@ def plot_adaptive_k_bar(
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
     plt.close(fig)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ships_dataset Loader & Prepare
+# ══════════════════════════════════════════════════════════════════════
+
+_SHIPS_CLASS_NAMES = [
+    'Aircraft Carrier', 'Bulkers', 'Car Carrier', 'Container Ship',
+    'Cruise', 'DDG', 'Recreational', 'Sailboat', 'Submarine', 'Tug',
+]
+
+
+def load_ships_split(
+    split_dir: str,
+    image_size: tuple[int, int],
+    samples_per_class: int,
+    random_seed: int = 42,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Load one split (train or test) of ships_dataset.
+
+    Parameters
+    ----------
+    split_dir         : path to the split folder (e.g. datasets/ships_dataset/train)
+    image_size        : (width, height) for cv2.resize
+    samples_per_class : how many samples to use per class (capped at available)
+    random_seed       : for reproducible shuffling
+
+    Returns
+    -------
+    X : np.ndarray, shape (DIM, Class_NUM * samples_per_class), float64 in [0,1]
+    y : np.ndarray, shape (Class_NUM * samples_per_class,), int  0-based labels
+    """
+    if not os.path.isdir(split_dir):
+        raise FileNotFoundError(f'ships_dataset split not found: {split_dir}')
+
+    rng = np.random.default_rng(random_seed)
+    width, height = image_size
+    DIM = width * height
+    CLASS_NUM = len(_SHIPS_CLASS_NAMES)
+
+    all_vecs: list[np.ndarray] = []
+    all_labels: list[int] = []
+
+    for cls_idx, cls_name in enumerate(_SHIPS_CLASS_NAMES):
+        cls_dir = os.path.join(split_dir, cls_name)
+        files = sorted(
+            f for f in os.listdir(cls_dir)
+            if f.lower().endswith(('.jpeg', '.jpg', '.png'))
+        )
+        rng.shuffle(files)
+        files = files[:samples_per_class]
+
+        for fname in files:
+            img = cv2.imread(os.path.join(cls_dir, fname), cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                continue
+            img = cv2.resize(img, (width, height), interpolation=cv2.INTER_LINEAR)
+            all_vecs.append(img.astype(np.float64).ravel() / 255.0)
+            all_labels.append(cls_idx)
+
+    X = np.array(all_vecs, dtype=np.float64).T   # (DIM, N)
+    y = np.array(all_labels, dtype=int)
+    return X, y
+
+
+def prepare_ships_data(
+    dataset_root: str,
+    image_size: tuple[int, int] = (64, 64),
+    samples_per_class_train: int = 300,
+    samples_per_class_test: int = 100,
+    max_disc: int = 80,
+    random_seed: int = 42,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int, int]:
+    """
+    Load ships_dataset (pre-split train/test), run PCA, reshape to 3D.
+
+    Parameters
+    ----------
+    dataset_root            : path to ships_dataset folder
+    image_size              : (width, height)
+    samples_per_class_train : samples per class from train split
+    samples_per_class_test  : samples per class from test split
+    max_disc                : max PCA dimensions
+    random_seed             : reproducibility seed
+
+    Returns
+    -------
+    Train_SET_3D     : (Disc_NUM, samples_per_class_train, CLASS_NUM)
+    Test_SET_3D      : (Disc_NUM, samples_per_class_test,  CLASS_NUM)
+    disc_set         : (DIM, Disc_NUM)
+    Class_Train_NUM  : int
+    Class_Test_NUM   : int
+    Class_NUM        : int
+    """
+    CLASS_NUM = len(_SHIPS_CLASS_NAMES)
+
+    X_train, _ = load_ships_split(
+        os.path.join(dataset_root, 'train'),
+        image_size, samples_per_class_train, random_seed,
+    )
+    X_test, _ = load_ships_split(
+        os.path.join(dataset_root, 'test'),
+        image_size, samples_per_class_test, random_seed,
+    )
+
+    # X_train shape: (DIM, CLASS_NUM * samples_per_class_train)
+    # Columns are ordered: all class-0 samples, then class-1, ...
+    # load_ships_split iterates classes in order so this holds.
+
+    Disc_NUM = min(max_disc, CLASS_NUM * samples_per_class_train - 1)
+    disc_set, _ = Eigenface_f(X_train, Disc_NUM)
+
+    Train_PCA = disc_set.T @ X_train   # (Disc_NUM, CLASS_NUM * n_train)
+    Test_PCA  = disc_set.T @ X_test    # (Disc_NUM, CLASS_NUM * n_test)
+
+    Train_SET_3D = Train_PCA.reshape(Disc_NUM, samples_per_class_train, CLASS_NUM, order='F')
+    Test_SET_3D  = Test_PCA .reshape(Disc_NUM, samples_per_class_test,  CLASS_NUM, order='F')
+
+    return Train_SET_3D, Test_SET_3D, disc_set, samples_per_class_train, samples_per_class_test, CLASS_NUM
