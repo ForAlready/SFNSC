@@ -52,6 +52,7 @@ datasets/seaships_gray.zip
 datasets/seaships/
 datasets/seaships_gray/
 datasets/iShip-1/
+datasets/
 
 # Backups
 .bak/
