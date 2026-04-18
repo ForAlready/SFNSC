@@ -50,7 +50,7 @@ def main() -> None:
     print(f'{"#" * 60}\n')
 
     print('Loading and preparing data (PCA) ...')
-    Train_SET_3D, Test_SET_3D, _disc, Class_Train_NUM, Class_Test_NUM, Class_NUM = \
+    Train_SET_3D, Test_SET_3D, _disc, Class_Train_NUM, Class_Test_NUM, Class_NUM, _ = \
         prepare_ships_data(
             dataset_root=DATASET_ROOT,
             image_size=IMAGE_SIZE,

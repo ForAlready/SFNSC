@@ -1,0 +1,11 @@
+Optimal SCI-FSNC Configuration for iShip-1
+==================================================
+
+lam = 0.2
+K_MIN = 1
+max_disc = 120
+sci_threshold = 0.01
+
+Accuracy: 0.7194
+Baseline accuracy: 0.6694
+Improvement: 5.00%

@@ -14,12 +14,15 @@ from experiment_utils import (
     load_seaships,
     load_iship1,
     prepare_data,
+    prepare_ships_data,
     run_all_classifiers,
     apply_noise_to_test_dat,
     add_gaussian_noise,
     add_salt_pepper_noise,
     add_occlusion,
     plot_robustness_curve,
+    plot_annotation_viz,
+    _SHIPS_CLASS_NAMES,
 )
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -32,7 +35,8 @@ SALT_PEPPER_LEVELS = [0.0, 0.02, 0.05, 0.10, 0.15, 0.20]
 OCCLUSION_LEVELS   = [0.0, 0.05, 0.10, 0.15, 0.20, 0.25]
 
 ROBUSTNESS_METHODS = {
-    'FKNN':     True,    # optional
+    'KNN':      True,    # optional
+    'FKNN':     False,   # optional
     'SRC':      True,    # required
     'FSNC':     True,    # required
     'SCI_FSNC': True,    # required
@@ -52,6 +56,14 @@ DATASET_CONFIGS = {
         'image_size':        (64, 64),
         'samples_per_class': 300,
         'class_num':         6,
+    },
+    'ships_dataset': {
+        'loader':                    'ships',
+        'dataset_root':              os.path.join('datasets', 'ships_dataset'),
+        'image_size':                (64, 64),
+        'samples_per_class_train':   300,
+        'samples_per_class_test':    100,
+        'class_num':                 10,
     },
 }
 
@@ -94,45 +106,59 @@ def run_robustness(dataset_name: str, cfg: dict) -> None:
     print(f'{"#" * 60}')
 
     # ── Load data ────────────────────────────────────────────────────────
-    if cfg['loader'] == 'seaships':
-        All_DAT_raw = load_seaships(
-            dataset_path=cfg['dataset_path'],
-            image_size=cfg['image_size'],
-            samples_per_class=cfg['samples_per_class'],
-        )
-    else:
-        All_DAT_raw = load_iship1(
+    Class_NUM  = cfg['class_num']
+    image_size = cfg['image_size']                         # (width, height)
+    image_shape = (image_size[1], image_size[0])           # (height, width) for noise fns
+
+    if cfg['loader'] == 'ships':
+        # ships_dataset: pre-split train/test; prepare_ships_data returns raw test pixels
+        (Train_SET_3D, _, disc_set,
+         Class_Train_NUM, Class_Test_NUM, _,
+         Test_DAT_raw_2d) = prepare_ships_data(
             dataset_root=cfg['dataset_root'],
-            image_size=cfg['image_size'],
-            samples_per_class=cfg['samples_per_class'],
+            image_size=image_size,
+            samples_per_class_train=cfg['samples_per_class_train'],
+            samples_per_class_test=cfg['samples_per_class_test'],
+        )
+        class_names = list(_SHIPS_CLASS_NAMES)
+    else:
+        if cfg['loader'] == 'seaships':
+            All_DAT_raw = load_seaships(
+                dataset_path=cfg['dataset_path'],
+                image_size=image_size,
+                samples_per_class=cfg['samples_per_class'],
+            )
+        else:
+            All_DAT_raw = load_iship1(
+                dataset_root=cfg['dataset_root'],
+                image_size=image_size,
+                samples_per_class=cfg['samples_per_class'],
+            )
+
+        Class_Sample_NUM = cfg['samples_per_class']
+
+        # ── Split + PCA (computed once from clean training data) ─────────
+        Train_SET_3D, _, disc_set, Class_Train_NUM, Class_Test_NUM = prepare_data(
+            All_DAT_raw=All_DAT_raw,
+            Class_NUM=Class_NUM,
+            Class_Sample_NUM=Class_Sample_NUM,
+            train_ratio=TRAIN_RATIO,
         )
 
-    Class_NUM        = cfg['class_num']
-    Class_Sample_NUM = cfg['samples_per_class']
-    image_size       = cfg['image_size']          # (width, height)
-    image_shape      = (image_size[1], image_size[0])  # (height, width) for noise fns
+        # ── Keep raw pixel-space test data for noise injection ───────────
+        Test_DAT_raw_2d = np.zeros(
+            (All_DAT_raw.shape[0], Class_Test_NUM * Class_NUM), dtype=np.float64
+        )
+        col = 0
+        for r in range(Class_NUM):
+            block = All_DAT_raw[:, r * Class_Sample_NUM: (r + 1) * Class_Sample_NUM]
+            test_block = block[:, Class_Train_NUM:]
+            Test_DAT_raw_2d[:, col: col + Class_Test_NUM] = test_block
+            col += Class_Test_NUM
 
-    # ── Split + PCA (computed once from clean training data) ─────────────
-    Train_SET_3D, _, disc_set, Class_Train_NUM, Class_Test_NUM = prepare_data(
-        All_DAT_raw=All_DAT_raw,
-        Class_NUM=Class_NUM,
-        Class_Sample_NUM=Class_Sample_NUM,
-        train_ratio=TRAIN_RATIO,
-    )
+        class_names = None  # not used for non-ships datasets in viz
+
     Disc_NUM = disc_set.shape[1]
-
-    # ── Keep raw pixel-space test data for noise injection ───────────────
-    ratio = TRAIN_RATIO / 100.0
-    Test_DAT_raw_2d = np.zeros(
-        (All_DAT_raw.shape[0], Class_Test_NUM * Class_NUM), dtype=np.float64
-    )
-    col = 0
-    for r in range(Class_NUM):
-        block = All_DAT_raw[:, r * Class_Sample_NUM: (r + 1) * Class_Sample_NUM]
-        test_block = block[:, Class_Train_NUM:]
-        Test_DAT_raw_2d[:, col: col + Class_Test_NUM] = test_block
-        col += Class_Test_NUM
-
     true_labels = np.repeat(np.arange(Class_NUM), Class_Test_NUM)
 
     print(f'Train samples/class: {Class_Train_NUM}, Test samples/class: {Class_Test_NUM}')
@@ -149,6 +175,7 @@ def run_robustness(dataset_name: str, cfg: dict) -> None:
         print(f'\n--- Noise type: {noise_type} ---')
         # acc_by_method[method] = list of accuracies, one per noise level
         acc_by_method: dict[str, list[float]] = {}
+        last_results: dict = {}
 
         for level in noise_levels:
             print(f'  Level: {level:.2f}', end='  ')
@@ -178,6 +205,7 @@ def run_robustness(dataset_name: str, cfg: dict) -> None:
                 lam=0.05,
                 K_knn=5,
             )
+            last_results = results  # keep results from highest noise level
 
             accs_str = []
             for method, metrics in results.items():
@@ -197,6 +225,25 @@ def run_robustness(dataset_name: str, cfg: dict) -> None:
             save_path=save_path,
         )
         print(f'Saved: {save_path}')
+
+        # ── Annotation visualisation (ships_dataset only, highest noise level) ──
+        if cfg['loader'] == 'ships' and class_names is not None:
+            for method, metrics in last_results.items():
+                viz_path = os.path.join(
+                    RESULT_DIR,
+                    f'viz_{dataset_name}_{method}_robustness_{noise_type}.png',
+                )
+                plot_annotation_viz(
+                    test_images_raw=Test_DAT_raw_2d,
+                    true_labels=true_labels,
+                    predict_labels_2d=metrics['pred_labels'],
+                    class_names=class_names,
+                    image_shape=image_shape,
+                    dataset_name=dataset_name,
+                    method_name=method,
+                    save_path=viz_path,
+                )
+                print(f'Saved viz: {viz_path}')
 
 
 def main() -> None:

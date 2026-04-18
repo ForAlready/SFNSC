@@ -14,9 +14,12 @@ from experiment_utils import (
     load_seaships,
     load_iship1,
     prepare_data,
+    prepare_ships_data,
     identify_boundary_samples,
     FixedK_SCI_FSNC_Runner,
     plot_adaptive_k_bar,
+    plot_annotation_viz,
+    _SHIPS_CLASS_NAMES,
 )
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -39,6 +42,14 @@ DATASET_CONFIGS = {
         'image_size':        (64, 64),
         'samples_per_class': 300,
         'class_num':         6,
+    },
+    'ships_dataset': {
+        'loader':                    'ships',
+        'dataset_root':              os.path.join('datasets', 'ships_dataset'),
+        'image_size':                (64, 64),
+        'samples_per_class_train':   300,
+        'samples_per_class_test':    100,
+        'class_num':                 10,
     },
 }
 
@@ -118,29 +129,45 @@ def run_adaptive_k_experiment(dataset_name: str, cfg: dict) -> None:
     print(f'{"#" * 60}')
 
     # ── Load data ────────────────────────────────────────────────────────
-    if cfg['loader'] == 'seaships':
-        All_DAT_raw = load_seaships(
-            dataset_path=cfg['dataset_path'],
-            image_size=cfg['image_size'],
-            samples_per_class=cfg['samples_per_class'],
-        )
-    else:
-        All_DAT_raw = load_iship1(
+    image_size  = cfg['image_size']
+    image_shape = (image_size[1], image_size[0])   # (height, width)
+    Class_NUM   = cfg['class_num']
+    Test_DAT_raw_2d = None
+    class_names     = None
+
+    if cfg['loader'] == 'ships':
+        (Train_SET_3D, Test_SET_3D, _disc_set,
+         Class_Train_NUM, Class_Test_NUM, _,
+         Test_DAT_raw_2d) = prepare_ships_data(
             dataset_root=cfg['dataset_root'],
-            image_size=cfg['image_size'],
-            samples_per_class=cfg['samples_per_class'],
+            image_size=image_size,
+            samples_per_class_train=cfg['samples_per_class_train'],
+            samples_per_class_test=cfg['samples_per_class_test'],
         )
+        class_names = list(_SHIPS_CLASS_NAMES)
+    else:
+        if cfg['loader'] == 'seaships':
+            All_DAT_raw = load_seaships(
+                dataset_path=cfg['dataset_path'],
+                image_size=image_size,
+                samples_per_class=cfg['samples_per_class'],
+            )
+        else:
+            All_DAT_raw = load_iship1(
+                dataset_root=cfg['dataset_root'],
+                image_size=image_size,
+                samples_per_class=cfg['samples_per_class'],
+            )
 
-    Class_NUM        = cfg['class_num']
-    Class_Sample_NUM = cfg['samples_per_class']
+        Class_Sample_NUM = cfg['samples_per_class']
 
-    # ── Prepare data (split + PCA) ───────────────────────────────────────
-    Train_SET_3D, Test_SET_3D, _disc_set, Class_Train_NUM, Class_Test_NUM = prepare_data(
-        All_DAT_raw=All_DAT_raw,
-        Class_NUM=Class_NUM,
-        Class_Sample_NUM=Class_Sample_NUM,
-        train_ratio=TRAIN_RATIO,
-    )
+        # ── Prepare data (split + PCA) ───────────────────────────────────
+        Train_SET_3D, Test_SET_3D, _disc_set, Class_Train_NUM, Class_Test_NUM = prepare_data(
+            All_DAT_raw=All_DAT_raw,
+            Class_NUM=Class_NUM,
+            Class_Sample_NUM=Class_Sample_NUM,
+            train_ratio=TRAIN_RATIO,
+        )
 
     true_labels = np.repeat(np.arange(Class_NUM), Class_Test_NUM)
     n_test = Class_NUM * Class_Test_NUM
@@ -215,6 +242,21 @@ def run_adaptive_k_experiment(dataset_name: str, cfg: dict) -> None:
         save_path=save_path,
     )
     print(f'\nSaved: {save_path}')
+
+    # ── Annotation visualisation (ships_dataset only) ────────────────────
+    if cfg['loader'] == 'ships' and class_names is not None and Test_DAT_raw_2d is not None:
+        viz_path = os.path.join(RESULT_DIR, f'viz_{dataset_name}_SCI_FSNC.png')
+        plot_annotation_viz(
+            test_images_raw=Test_DAT_raw_2d,
+            true_labels=true_labels,
+            predict_labels_2d=Pred_adapt,
+            class_names=class_names,
+            image_shape=image_shape,
+            dataset_name=dataset_name,
+            method_name='SCI_FSNC',
+            save_path=viz_path,
+        )
+        print(f'Saved viz: {viz_path}')
 
 
 def main() -> None:
